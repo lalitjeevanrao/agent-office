@@ -1,6 +1,7 @@
 // What BB (the agent manager this machine runs) shows of itself in the building: a floor per BB
 // project, a desk per live thread (see docs/bb-mirror.md). BB stays the source of truth — the
-// office only reads it, through the bb CLI, and never writes to the projects it shows.
+// office reads it through the bb CLI, and the one thing it writes back is the message you type
+// into a desk's prompt box.
 
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -218,6 +219,7 @@ class MirrorSession implements WorkerSession {
   private seq = 0;
   private fetched = false;
   private busy = false;
+  private alive = true;
 
   constructor(
     private readonly threadId: string,
@@ -241,7 +243,7 @@ class MirrorSession implements WorkerSession {
     this.busy = true;
     try {
       const events = await runBb<BbEvent[]>('thread', 'log', this.threadId, '--after-seq', String(this.seq));
-      if (!events?.length) return;
+      if (!events?.length || !this.alive) return;
       this.fetched = true;
       this.seq = events[events.length - 1].seq;
       for (const e of events) this.write(eventLine(e));
@@ -260,6 +262,7 @@ class MirrorSession implements WorkerSession {
     this.write(`\r\n\x1b[2m${time}\x1b[0m \x1b[1m→ ${truncate(text, 200)}\x1b[0m\r\n`);
     void (async () => {
       const told = await runBb(...tellCommand(this.threadId, text));
+      if (!this.alive) return;
       if (told === undefined) {
         this.write(`\x1b[31mBB wouldn't take the message — is the thread still alive? Try again in a moment.\x1b[0m\r\n`);
         return;
@@ -270,6 +273,7 @@ class MirrorSession implements WorkerSession {
   }
 
   close(): void {
+    this.alive = false; // an in-flight refresh must not write into the disposed terminal
     clearInterval(this.timer);
     this.timer = undefined;
   }
