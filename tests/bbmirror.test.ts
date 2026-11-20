@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { bbFloorDef, parseRepo, seatThreads, threadStatus, workerInfo, type BbThread } from '../src/server/bbmirror.js';
+import { bbFloorDef, parseRepo, seatThreads, tellCommand, threadStatus, workerInfo, type BbThread } from '../src/server/bbmirror.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -52,6 +52,9 @@ test('repos parse out of git remotes', () => {
   assert.equal(parseRepo('https://gitlab.com/owner/repo'), undefined);
 });
 
+test('talking to a thread is one bb command, steering a live turn or starting one', () => {
+  assert.deepEqual(tellCommand('thr_1', 'ship it'), ['thread', 'tell', 'thr_1', '--mode', 'auto', 'ship it']);
+});
 test('a thread becomes a worker with its provider and title', () => {
   const w = workerInfo(thread('thr_1', { providerId: 'claude-code', title: 'Fix the thing', status: 'active' }), 'desk-1', 'Mochi');
   assert.equal(w.provider, 'claude');

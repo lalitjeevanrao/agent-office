@@ -204,6 +204,11 @@ function eventLine(e: BbEvent): string {
   return `\r\n\x1b[2m${time}\x1b[0m ${said ? `${e.type}: ${truncate(said, 200)}` : e.type}`;
 }
 
+/** What the office runs to talk to a thread: one message, steering a live turn or starting one. */
+export function tellCommand(threadId: string, text: string): string[] {
+  return ['thread', 'tell', threadId, '--mode', 'auto', text];
+}
+
 /**
  * One mirrored thread's terminal: the tail of its BB log, fetched when someone is watching it
  * and refreshed while they do. Implements what a desk's worker needs of its session.
@@ -246,11 +251,22 @@ class MirrorSession implements WorkerSession {
   }
 
   writeInput(): void {
-    // Keystrokes go nowhere: the thread runs in BB, not at this desk.
+    // Keystrokes go nowhere: talking to the thread is a message, typed in the prompt box.
   }
 
-  prompt(): void {
-    this.write(`\r\n\x1b[2mThis desk mirrors BB thread ${this.threadId} — talk to it in BB for now.\x1b[0m\r\n`);
+  /** Sends a message to the thread (`bb thread tell`): the prompt box in its terminal, answered. */
+  prompt(text: string): void {
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    this.write(`\r\n\x1b[2m${time}\x1b[0m \x1b[1m→ ${truncate(text, 200)}\x1b[0m\r\n`);
+    void (async () => {
+      const told = await runBb(...tellCommand(this.threadId, text));
+      if (told === undefined) {
+        this.write(`\x1b[31mBB wouldn't take the message — is the thread still alive? Try again in a moment.\x1b[0m\r\n`);
+        return;
+      }
+      // What the thread says back lands here through refresh() as it happens.
+      void this.refresh();
+    })();
   }
 
   close(): void {

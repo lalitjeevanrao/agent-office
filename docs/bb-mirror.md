@@ -26,10 +26,14 @@ only requirement. Nothing else changes: same office, same password, same control
   for a hired worker: the glow over the desk, the red beacon and the alarm when it needs you,
   and **N** jumps you there. The thread's title is its task, its BB provider its face (Pi, Claude,
   Codex). Its terminal (walk up, **E**) shows what the thread has been doing, as BB logged it.
-- **Read-only by design.** This is a window onto BB, not a remote control: typing into a
-  mirrored terminal tells you so, and nothing you do in the office launches, stops or changes a
-  real BB thread. Hiring at a desk in `--bb` mode works as it always did — that worker is the
-  office's own, in the floor's checkout, not a BB thread.
+- **Talk to a thread from its desk.** The prompt box in a mirrored terminal sends the message to
+  the thread (`bb thread tell`): answer the question a beacon is lit for, or steer what it's
+  doing. What the thread says back shows in the terminal as it happens. Keystrokes still go
+  nowhere — talking is a message, not typing.
+- **Nothing runs behind your back.** The office never launches, stops or restarts a BB thread of
+  its own; a message you send is the one exception, and it's yours. Hiring at a desk in `--bb`
+  mode works as it always did — that worker is the office's own, in the floor's checkout, not a
+  BB thread.
 
 ## How it works
 
@@ -43,7 +47,9 @@ The wiring lives in `src/server/bbmirror.ts` (the polling and seating) and
 `src/server/workers/mirror.ts` (how a mirrored thread takes a desk without being run), built on
 the same seams as everything else — see [code layout](code-layout.md).
 
-## Not in this first stage
+## Not yet
 
-Handing a thread new work, approving its plans, hiring through BB's roles, the task tracker on
-the walls: those are the next stages, tracked separately.
+Answering is a message, not a button per question: a thread waiting on a choice gets your typed
+answer, and the office doesn't yet render the thread's specific options. Hiring through BB's
+roles, approving plans at the desk, and the task tracker on the walls are the next stages,
+tracked separately.
