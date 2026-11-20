@@ -61,6 +61,8 @@ export interface Config {
   weather?: Weather;
   /** The sky keeps real time (a day a day), instead of a whole day and night every hour. */
   realTimeSky: boolean;
+  /** The building mirrors this machine's BB threads instead of GitHub repos (see docs/bb-mirror.md). */
+  bb: boolean;
 }
 
 export interface RTCIceServerLike {
@@ -111,6 +113,8 @@ Options:
       --projects <dir>    Where new floors are cloned, as <dir>/<owner>/<repo>
                           (default ~/agent-office, env AGENT_OFFICE_PROJECTS).
                           Also settable from ⚙️ Settings in the office
+      --bb                The building mirrors this machine's BB threads instead
+                          of GitHub repos (see docs/bb-mirror.md)
   -p, --port <n>          Port to listen on (default 4600, env PORT)
   -H, --host <addr>       Address to bind (default 127.0.0.1: only this machine).
                           0.0.0.0 lets other computers on your network in
@@ -241,6 +245,7 @@ export function loadConfig(argv: string[]): Config {
   let city = process.env.AGENT_OFFICE_CITY || '';
   let weather = process.env.AGENT_OFFICE_WEATHER || '';
   let realTimeSky = process.env.AGENT_OFFICE_SKY_CLOCK === 'real';
+  let bb = false;
   const iceServers: RTCIceServerLike[] = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
   // A container can't take --turn (deploy/container/compose.yaml), so the TURN servers come from the environment too.
   for (const url of (process.env.AGENT_OFFICE_TURN ?? '').split(/\s+/).filter(Boolean)) iceServers.push(parseTurn(url));
@@ -325,6 +330,9 @@ export function loadConfig(argv: string[]): Config {
         break;
       case '--real-time-sky':
         realTimeSky = true;
+        break;
+      case '--bb':
+        bb = true;
         break;
       default:
         if (a.startsWith('-')) {
@@ -463,6 +471,7 @@ export function loadConfig(argv: string[]): Config {
     city: city.trim() || undefined,
     weather: (weather as Weather) || undefined,
     realTimeSky,
+    bb,
   };
 }
 

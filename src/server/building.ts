@@ -14,6 +14,8 @@ export interface FloorDef {
   /** owner/name on GitHub. */
   repo?: string;
   dir: string;
+  /** Writable floor state lives here instead of <dir>/.agent-office when set (BB mirror floors keep a read-only dir). */
+  dataDir?: string;
   palette: number;
   addedBy: string;
   addedAt: number;

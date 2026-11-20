@@ -16,6 +16,8 @@ agent-office [dir] [options]
       --home <dir>        Where the office keeps its data without a [dir] (default ~/agent-office)
       --projects <dir>    Where new floors are cloned, as <dir>/<owner>/<repo> (default ~/agent-office;
                           also settable from ⚙️ Settings)
+      --bb                Mirror this machine's BB threads instead of GitHub repos (see
+                          [bb-mirror.md](bb-mirror.md))
   -p, --port <n>          Port (default 4600, env PORT)
   -H, --host <addr>       Bind address (default 127.0.0.1; 0.0.0.0 lets your network in)
       --password <pw>     Office password (env AGENT_OFFICE_PASSWORD)

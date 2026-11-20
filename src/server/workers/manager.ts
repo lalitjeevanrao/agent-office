@@ -7,8 +7,9 @@ import { DESK_BY_ID, STATION_AGENT, deskBuilt } from '../../shared/layout.js';
 import { stationBrief } from '../stations.js';
 import type { PromptSource } from '../prompts.js';
 import type { GhAs } from '../signins.js';
-import type { ServiceOwner } from '../services.js';
+import { ownersOf, type ServiceOwner } from '../services.js';
 import { addUsage, newTracker, scanTracker, trackerUsage, zeroUsage, type Ledger } from '../usage.js';
+import { WorkerSeats } from './mirror.js';
 import { PtyHost, SCROLLBACK, type Adopted, type Pty } from '../ptys.js';
 import { configuredProvider, providerCommand, validateWorkerEffort, validateWorkerModel } from '../agents.js';
 import { ScrollbackStore, searchTerminal, terminalTail } from '../history.js';
@@ -17,6 +18,7 @@ import { DropStore } from '../drops.js';
 import type { Capacity } from '../machine.js';
 import { PROVIDERS, providerAdapter, titleNoise, type LaunchPlan, type ProviderFloor } from '../providers/index.js';
 import { launchAcp } from './acp.js';
+import type { WorkerSession } from './session.js';
 import { clockWork } from './clock.js';
 import { childEnv } from './env.js';
 import { midTurn } from './lifecycle.js';
@@ -62,6 +64,8 @@ export class WorkerManager {
   private tasks: WorkerTasks;
   private worktrees: WorkerTrees;
   private prs: WorkerPrs;
+  /** Seated BB threads, shown but never run (see workers/mirror.ts and bbmirror.ts). */
+  seats: WorkerSeats;
   private usageTimer: NodeJS.Timeout;
   /** Runs the workers' terminals outside the office, so they outlive a restart of it (see ptys.ts). */
   private host: PtyHost;
@@ -121,6 +125,7 @@ export class WorkerManager {
     this.tasks = new WorkerTasks(this.ctx, claude, childEnv());
     this.worktrees = new WorkerTrees(this.ctx);
     this.prs = new WorkerPrs(this.ctx);
+    this.seats = new WorkerSeats(this.ctx);
     this.host = new PtyHost(dataDir, () => this.events.toast("The workers' terminal host stopped — resuming them", 'warn'));
     this.scrollback = new ScrollbackStore(dataDir);
     this.drops = new DropStore(dataDir);
@@ -192,13 +197,7 @@ export class WorkerManager {
 
   /** Each worker's terminal process and directory, to tell whose servers are whose. */
   owners(): ServiceOwner[] {
-    return [...this.workers.values()].map((w) => ({
-      workerId: w.info.id,
-      pid: w.pty?.pid,
-      agent: w.info.kind === 'agent',
-      cwd: this.cwd(w.info),
-      root: this.dir,
-    }));
+    return ownersOf(this.workers.values(), (info) => this.cwd(info), this.dir);
   }
 
   /**
@@ -936,6 +935,7 @@ export class WorkerManager {
   private emitUpdate(w: Worker) {
     this.events.update({ ...w.info });
   }
+
 
   /** What a worker's provider adapter is handed of it (see WorkerHandle): made once, kept on the worker. */
   private handleOf(w: Worker): WorkerHandle {

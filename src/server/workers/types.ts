@@ -1,7 +1,7 @@
 // The shapes the workers' modules and the provider adapters (server/providers/) share.
 import type serialize from '@xterm/addon-serialize';
 import type { Run, WorkerInfo, WorkerStatus } from '../../shared/protocol.js';
-import type { DshSession } from '../dsh.js';
+import type { WorkerSession } from './session.js';
 import type { PromptSource } from '../prompts.js';
 import type { Pty } from '../ptys.js';
 import type { UsageTracker } from '../usage.js';
@@ -57,10 +57,10 @@ export interface Worker {
   owner?: string;
   pty?: Pty;
   /**
-   * A DeepSeek Harness worker's ACP connection. It has no PTY: ACP updates are rendered into the
-   * same headless terminal the other providers mirror a process into (see dsh.ts).
+   * A process-less worker's session, rendered into the same headless terminal a PTY mirrors
+   * into: DeepSeek Harness's ACP connection (see dsh.ts), or a mirrored BB thread (bbmirror.ts).
    */
-  dsh?: DshSession;
+  dsh?: WorkerSession;
   term?: HeadlessTerminal;
   ser?: InstanceType<typeof serialize.SerializeAddon>;
   /** The screen so far, for a browser opening the terminal (see screen.ts). */
@@ -101,6 +101,8 @@ export interface Worker {
   fresh?: { readonly line: number };
   /** Its lost worktree is being put back (see rebuild): the folder coming back mustn't wake it before that's done. */
   rebuilding?: boolean;
+  /** A BB thread mirrored onto this desk (see bbmirror.ts): shown, never run, never persisted. */
+  mirror?: boolean;
 }
 
 export interface WorkerEvents {

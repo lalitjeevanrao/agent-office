@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { WebSocket } from 'ws';
 import type { FloorDef } from '../building.js';
+import { startBbMirror } from '../bbmirror.js';
 import { Floor, type FloorContext } from '../floor.js';
 import { ROOF } from '../../shared/rooftop.js';
 import type { FloorInfo, ServerMsg } from '../../shared/protocol.js';
@@ -136,22 +137,28 @@ export async function openFloors(ctx: Ctx, hookPort: number): Promise<FloorsOpen
       return undefined;
     }
   };
-  // Started in a project: it's a floor too (the one it has always been).
-  if (cfg.project) ctx.building.ensureLocal(cfg.project, 'the office');
-  for (const def of ctx.building.list()) openFloor(def);
-  // Clones keep the elevator's progress up to date, and ones the last office left running carry on.
-  ctx.building.watchClones(ctx.floorsChanged);
-  ctx.building.resumeClones((r) => {
-    ctx.floorsChanged();
-    if (typeof r === 'string') {
-      console.error(`agent-office: ${r}`);
-      return ctx.toastAll(`🛗 ${r}`, 'warn');
-    }
-    if (!openFloor(r)) return;
-    console.log(`  the ${r.name} floor's clone finished (${r.dir})`);
-    ctx.toastAll(`🛗 New floor: ${r.name}, added by ${r.addedBy}`);
-  });
+  let stopMirror: (() => void) | undefined;
+  if (cfg.bb) {
+    // BB mode: the building is BB's projects, its desks BB's threads (see docs/bb-mirror.md).
+    stopMirror = await startBbMirror(ctx, openFloor);
+  } else {
+    // Started in a project: it's a floor too (the one it has always been).
+    if (cfg.project) ctx.building.ensureLocal(cfg.project, 'the office');
+    for (const def of ctx.building.list()) openFloor(def);
+    // Clones keep the elevator's progress up to date, and ones the last office left running carry on.
+    ctx.building.watchClones(ctx.floorsChanged);
+    ctx.building.resumeClones((r) => {
+      ctx.floorsChanged();
+      if (typeof r === 'string') {
+        console.error(`agent-office: ${r}`);
+        return ctx.toastAll(`🛗 ${r}`, 'warn');
+      }
+      if (!openFloor(r)) return;
+      console.log(`  the ${r.name} floor's clone finished (${r.dir})`);
+      ctx.toastAll(`🛗 New floor: ${r.name}, added by ${r.addedBy}`);
+    });
+  }
   // Workers still running from the last office are back at their desks before anyone walks in.
   await Promise.all([...floors.values()].map((f) => f.ready));
-  return { openFloor };
+  return { openFloor, stopMirror: () => stopMirror?.() };
 }
