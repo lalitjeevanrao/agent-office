@@ -23,6 +23,8 @@ const exec = promisify(execFile);
 const FLOOR_MS = 60_000; // projects come and go slowly
 const THREAD_MS = 5_000; // desk statuses should feel live
 const LOG_MS = 10_000; // a terminal someone is watching refreshes
+const WALK_HOPS = 25; // the first view walks at most this many pages to reach the tail
+const TAIL_LINES = 40; // and shows this many lines of what it found there
 const MAX_FLOORS = 12; // the elevator only has so many buttons
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000; // a thread quiet for a week has gone home
 const BB_TIMEOUT_MS = 15_000;
@@ -197,12 +199,33 @@ export function workerInfo(t: BbThread, deskId: string, name: string): WorkerInf
   };
 }
 
-/** What a log entry says, as one line for the terminal. */
-function eventLine(e: BbEvent): string {
-  const time = new Date(e.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+/** What a log entry says, as one line for the terminal — undefined when it's plumbing nobody wants. */
+export function eventLine(e: BbEvent): string | undefined {
   const d = (e.data ?? {}) as Record<string, unknown>;
-  const said = typeof d.text === 'string' ? d.text : typeof d.prompt === 'string' ? d.prompt : undefined;
-  return `\r\n\x1b[2m${time}\x1b[0m ${said ? `${e.type}: ${truncate(said, 200)}` : e.type}`;
+  const time = new Date(e.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const line = (who: string, said: string) => `\r\n\x1b[2m${time}\x1b[0m \x1b[1m${who}\x1b[0m ${truncate(said, 400)}`;
+  // A message into the thread: blocks of text (what you, an automation, or another thread asked).
+  const asked = Array.isArray(d.input)
+    ? d.input.filter((b) => (b as { type?: string })?.type === 'text').map((b) => (b as { text?: string }).text ?? '').join(' ').trim()
+    : undefined;
+  switch (e.type) {
+    case 'client/thread/start':
+      return asked ? line('🚀 started with', asked) : undefined;
+    case 'client/turn/requested':
+      return asked ? line('👉 asked', asked) : undefined;
+    case 'item/completed': {
+      const item = d.item as { type?: string; text?: string; command?: string; exitCode?: number } | undefined;
+      if (item?.type === 'agentMessage' && item.text) return line('🤖 said', item.text);
+      if (item?.type === 'commandExecution' && item.command) return line('⚙️ ran', `${item.command}${typeof item.exitCode === 'number' ? ` (exit ${item.exitCode})` : ''}`);
+      return undefined;
+    }
+    case 'provider/error':
+      return line('❌ errored', typeof d.message === 'string' ? d.message : e.type);
+    case 'turn/completed':
+      return line('✅ turn', String(d.status ?? 'finished'));
+    default:
+      return undefined; // provisioning, deltas, rate limits, token counts: not for the player
+  }
 }
 
 /** What the office runs to talk to a thread: one message, steering a live turn or starting one. */
@@ -238,18 +261,38 @@ class MirrorSession implements WorkerSession {
     if (!this.fetched) void this.refresh();
   }
 
+  /** Follows the thread: the first fetch walks to the tail (the log only pages oldest first), then each refresh adds what's new. */
   async refresh(): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     try {
-      const events = await runBb<BbEvent[]>('thread', 'log', this.threadId, '--after-seq', String(this.seq));
-      if (!events?.length || !this.alive) return;
-      this.fetched = true;
-      this.seq = events[events.length - 1].seq;
-      for (const e of events) this.write(eventLine(e));
+      const events = this.fetched ? await this.page() : await this.walkToTail();
+      if (!this.alive) return;
+      const lines = events.map(eventLine).filter((l): l is string => l !== undefined);
+      // A fresh view shows the recent end of the story, and a burst of new lines shows its tail.
+      for (const line of lines.slice(-TAIL_LINES)) this.write(line);
     } finally {
       this.busy = false;
     }
+  }
+
+  private async page(): Promise<BbEvent[]> {
+    const events = await runBb<BbEvent[]>('thread', 'log', this.threadId, '--after-seq', String(this.seq));
+    if (!events?.length) return [];
+    this.fetched = true;
+    this.seq = events[events.length - 1].seq;
+    return events;
+  }
+
+  private async walkToTail(): Promise<BbEvent[]> {
+    const seen: BbEvent[] = [];
+    for (let hops = 0; hops < WALK_HOPS; hops++) {
+      const events = await this.page();
+      if (!this.alive) return seen;
+      if (!events.length) break;
+      seen.push(...events);
+    }
+    return seen;
   }
 
   writeInput(): void {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { bbFloorDef, parseRepo, seatThreads, tellCommand, threadStatus, workerInfo, type BbThread } from '../src/server/bbmirror.js';
+import { bbFloorDef, parseRepo, seatThreads, eventLine, tellCommand, threadStatus, workerInfo, type BbThread } from '../src/server/bbmirror.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -54,6 +54,15 @@ test('repos parse out of git remotes', () => {
 
 test('talking to a thread is one bb command, steering a live turn or starting one', () => {
   assert.deepEqual(tellCommand('thr_1', 'ship it'), ['thread', 'tell', 'thr_1', '--mode', 'auto', 'ship it']);
+});
+
+test('a log says what happened, and plumbing stays out of the terminal', () => {
+  const at = (type: string, data: unknown) => eventLine({ seq: 1, createdAt: 0, type, data });
+  assert.equal(at('client/turn/requested', { input: [{ type: 'text', text: 'ship it' }] })?.includes('ship it'), true);
+  assert.equal(at('item/completed', { item: { type: 'agentMessage', text: 'done, PR open' } })?.includes('done, PR open'), true);
+  assert.equal(at('item/completed', { item: { type: 'commandExecution', command: 'npm test', exitCode: 0 } })?.includes('npm test'), true);
+  assert.equal(at('item/reasoning/textDelta', { text: 'hmm' }), undefined);
+  assert.equal(at('thread/tokenUsage/updated', {}), undefined);
 });
 test('a thread becomes a worker with its provider and title', () => {
   const w = workerInfo(thread('thr_1', { providerId: 'claude-code', title: 'Fix the thing', status: 'active' }), 'desk-1', 'Mochi');
