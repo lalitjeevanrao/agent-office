@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { bbFloorDef, parseRepo, seatThreads, eventLine, tellCommand, threadStatus, workerInfo, ackedFor, MirrorSession, __testBb, type BbThread } from '../src/server/bbmirror.js';
+import { bbFloorDef, parseRepo, seatThreads, eventLine, tellCommand, threadStatus, workerInfo, ackedFor, MirrorSession, runBb, __testBb, type BbThread } from '../src/server/bbmirror.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -54,6 +54,24 @@ test('repos parse out of git remotes', () => {
 
 test('talking to a thread is one bb command, steering a live turn or starting one', () => {
   assert.deepEqual(tellCommand('thr_1', 'ship it'), ['thread', 'tell', 'thr_1', '--mode', 'auto', '--', 'ship it']);
+});
+
+test('runBb answers with what bb printed, and --json stays ahead of the message', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bb-stub-'));
+  const stub = `#!/bin/sh\n# a stand-in bb: remembers its flags, answers in JSON\necho "$@" > "$BB_STUB_ARGS"\necho '[{"ok": true}]'\n`;
+  writeFileSync(path.join(dir, 'bb'), stub, { mode: 0o755 });
+  const argsFile = path.join(dir, 'args.txt');
+  process.env.BB_STUB_ARGS = argsFile;
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${dir}:${oldPath}`;
+  try {
+    const answer = await runBb<{ ok: boolean }[]>('thread', 'tell', 'thr_1', '--', 'ship it');
+    assert.deepEqual(answer, [{ ok: true }]);
+    assert.equal(readFileSync(argsFile, 'utf8').trim(), 'thread tell thr_1 --json -- ship it');
+  } finally {
+    process.env.PATH = oldPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a log says what happened, and plumbing stays out of the terminal', () => {

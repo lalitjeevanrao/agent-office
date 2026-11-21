@@ -67,12 +67,13 @@ const PROVIDER_MAP: Record<string, AgentProvider> = { pi: 'pi', codex: 'codex', 
 let complainedAt = 0;
 
 /** Runs `bb` and parses its --json answer; undefined (with one note a minute) when BB can't be asked. */
-async function runBb<T>(...args: string[]): Promise<T | undefined> {
+export async function runBb<T>(...args: string[]): Promise<T | undefined> {
   try {
     // --json before any '--': what follows that is the message, never options.
     const dd = args.indexOf('--');
     const argv = dd === -1 ? [...args, '--json'] : [...args.slice(0, dd), '--json', ...args.slice(dd)];
     const { stdout } = await exec('bb', argv, { timeout: BB_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    return JSON.parse(stdout) as T;
   } catch (err) {
     if (Date.now() - complainedAt > 60_000) {
       complainedAt = Date.now();
