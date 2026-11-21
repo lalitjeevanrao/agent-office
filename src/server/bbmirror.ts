@@ -1,0 +1,470 @@
+// What BB (the agent manager this machine runs) shows of itself in the building: a floor per BB
+// project, a desk per live thread (see docs/bb-mirror.md). BB stays the source of truth — the
+// office reads it through the bb CLI, and the one thing it writes back is the message you type
+// office reads it through the bb CLI, and the one thing it writes back is the message you type
+// into a desk's prompt box. It stays on loopback: that message reaches every thread on the machine.
+
+import { execFile } from 'node:child_process';
+import { existsSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import type { Floor } from './floor.js';
+import type { FloorDef } from './building.js';
+import { DESKS } from '../shared/layout.js';
+import { FLOOR_PALETTES } from '../shared/floors.js';
+import type { AgentProvider, WorkerInfo, WorkerStatus } from '../shared/protocol.js';
+import { COLORS, NAMES } from './workers/worker.js';
+import type { WorkerSession } from './workers/session.js';
+import type { Worker } from './workers/types.js';
+import { truncate } from './workers/util.js';
+import { terminalSafe } from './dsh.js';
+import type { Ctx } from './office/context.js';
+
+const exec = promisify(execFile);
+
+const FLOOR_MS = 60_000; // projects come and go slowly
+const THREAD_MS = 5_000; // desk statuses should feel live
+const LOG_MS = 10_000; // a terminal someone is watching refreshes
+const WALK_HOPS = 3; // the first view walks at most this many pages to reach the tail
+const PAGE_LIMIT = 5000; // events per page: a whole thread usually arrives in one
+const TAIL_LINES = 40; // and shows this many lines of what it found there
+const MAX_FLOORS = 12; // the elevator only has so many buttons
+const RECENT_MS = 7 * 24 * 60 * 60 * 1000; // a thread quiet for a week has gone home
+const BB_TIMEOUT_MS = 15_000;
+
+/** What `bb project list --json` says (the fields the office reads). */
+export interface BbProject {
+  id: string;
+  name: string;
+  gitRemoteUrl?: string;
+  sources?: { type: string; path: string; isDefault?: boolean }[];
+}
+
+/** What `bb thread list --json` says (the fields the office reads). */
+export interface BbThread {
+  id: string;
+  projectId: string;
+  providerId?: string;
+  title?: string;
+  titleFallback?: string;
+  status?: string;
+  pinnedAt?: number | null;
+  updatedAt?: number;
+  hasPendingInteraction?: boolean;
+}
+
+/** What `bb thread log --json` says, one entry per line (the fields the office reads). */
+export interface BbEvent {
+  seq: number;
+  createdAt: number;
+  type: string;
+  data?: unknown;
+}
+
+/** BB's provider ids as the office knows their icons. */
+const PROVIDER_MAP: Record<string, AgentProvider> = { pi: 'pi', codex: 'codex', 'claude-code': 'claude' };
+
+let complainedAt = 0;
+
+/** Runs `bb` and parses its --json answer; undefined (with one note a minute) when BB can't be asked. */
+async function runBb<T>(...args: string[]): Promise<T | undefined> {
+  try {
+    // --json before any '--': what follows that is the message, never options.
+    const dd = args.indexOf('--');
+    const argv = dd === -1 ? [...args, '--json'] : [...args.slice(0, dd), '--json', ...args.slice(dd)];
+    const { stdout } = await exec('bb', argv, { timeout: BB_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+  } catch (err) {
+    if (Date.now() - complainedAt > 60_000) {
+      complainedAt = Date.now();
+      console.error(`agent-office: bb ${args.join(' ')} failed: ${(err as Error).message}`);
+    }
+    return undefined;
+  }
+}
+
+/** The mirror's window on bb, swappable for tests; undefined puts the real subprocess back. */
+let ask: (...args: string[]) => Promise<unknown | undefined> = runBb;
+
+export function __testBb(fn?: (...args: string[]) => Promise<unknown | undefined>): void {
+  ask = fn ?? runBb;
+}
+
+/** FNV-1a: a thread's stable place in the name list, the palette and at a desk. */
+function hash(id: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** 'owner/name' out of a git remote, when it points at one. */
+export function parseRepo(url?: string): string | undefined {
+  const hit = url?.match(/github\.com[/:]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?$/i);
+  return hit ? `${hit[1]}/${hit[2]}` : undefined;
+}
+
+/** One BB project as a floor of the building. */
+export function bbFloorDef(cfg: { dataDir: string }, p: BbProject): FloorDef {
+  const source = p.sources?.find((s) => s.type === 'local_path' && s.isDefault) ?? p.sources?.find((s) => s.type === 'local_path');
+  // The project's own checkout when it's on this machine (boards and its bookshelf read it); a
+  // stand-in folder when it isn't, so the floor still opens and its state still lives somewhere.
+  const dir = source && existsSync(source.path) ? source.path : path.join(cfg.dataDir, 'bb', p.id, 'src');
+  if (dir === path.join(cfg.dataDir, 'bb', p.id, 'src')) mkdirSync(dir, { recursive: true });
+  return {
+    id: `bb-${p.id}`,
+    name: p.name,
+    repo: parseRepo(p.gitRemoteUrl),
+    dir,
+    // Writable floor state (queue, workers, floorplan) stays out of the project's checkout.
+    dataDir: path.join(cfg.dataDir, 'bb', p.id),
+    palette: hash(p.id) % FLOOR_PALETTES.length,
+    addedBy: 'BB',
+    addedAt: 0,
+  };
+}
+
+/** A thread's desk status, as the office says it (see WorkerStatus). */
+export function threadStatus(t: BbThread): WorkerStatus {
+  if (t.hasPendingInteraction) return 'needs_input';
+  switch (t.status) {
+    case 'active':
+      return 'working';
+    case 'pending':
+      return 'starting';
+    case 'error':
+      return 'exited';
+    default:
+      return 'idle';
+  }
+}
+
+/** Whether a seated thread's beacon is lit: only the start of a wait rings it, so an ack stands. */
+export function ackedFor(status: WorkerStatus, wasWaiting: boolean, prev?: boolean): boolean {
+  return status !== 'needs_input' ? true : wasWaiting ? prev ?? false : false;
+}
+
+/** Who gets a desk: whoever needs you, then whoever is busy, pinned or recently awake. */
+function threadScore(t: BbThread, now: number): number {
+  if (t.hasPendingInteraction) return 100;
+  if (t.status === 'active') return 80;
+  if (t.status === 'error') return t.updatedAt && now - t.updatedAt < RECENT_MS ? 70 : 0;
+  if (t.status === 'pending') return 50;
+  if (t.pinnedAt) return 60;
+  if (t.updatedAt && now - t.updatedAt < RECENT_MS) return 40;
+  return 0;
+}
+
+/** Which threads get which desks, the highest-scoring first at their stable desk. */
+export function seatThreads(threads: BbThread[], deskIds: string[], now = Date.now()): Map<string, string> {
+  const eligible = threads
+    .filter((t) => threadScore(t, now) > 0)
+    .sort((a, b) => threadScore(b, now) - threadScore(a, now) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  const taken = new Set<string>();
+  const seats = new Map<string, string>();
+  for (const t of eligible) {
+    if (seats.size >= deskIds.length) break;
+    const wanted = deskIds[hash(t.id) % deskIds.length];
+    const desk = !taken.has(wanted) ? wanted : deskIds.find((d) => !taken.has(d));
+    if (!desk) break;
+    taken.add(desk);
+    seats.set(t.id, desk);
+  }
+  return seats;
+}
+
+/** A thread's worker name: its stable one from the office's list, numbered if two would share it. */
+function workerName(t: BbThread, used: Set<string>): string {
+  const base = NAMES[hash(t.id) % NAMES.length];
+  let name = base;
+  for (let n = 2; used.has(name); n++) name = `${base} ${n}`;
+  used.add(name);
+  return name;
+}
+
+function summaryOf(t: BbThread): string {
+  const bits = [t.providerId ?? 'agent', t.status ?? 'idle'];
+  return bits.join(' · ');
+}
+
+/** A thread as the worker at its desk. */
+export function workerInfo(t: BbThread, deskId: string, name: string): WorkerInfo {
+  const status = threadStatus(t);
+  const title = (t.title ?? t.titleFallback ?? t.id).trim() || t.id;
+  const provider = t.providerId ? PROVIDER_MAP[t.providerId] : undefined;
+  return {
+    id: t.id,
+    kind: 'agent',
+    ...(provider ? { provider } : {}),
+    deskId,
+    name,
+    color: COLORS[hash(t.id) % COLORS.length],
+    status,
+    acked: status !== 'needs_input',
+    createdBy: 'bb',
+    createdAt: Date.now(),
+    title,
+    task: { name: truncate(title, 60), summary: summaryOf(t) },
+    activity: truncate(title, 80),
+    cols: 100,
+    rows: 30,
+    viewers: [],
+    viewerIds: [],
+  };
+}
+
+/** What a log entry says, as one line for the terminal — undefined when it's plumbing nobody wants. */
+export function eventLine(e: BbEvent): string | undefined {
+  const d = (e.data ?? {}) as Record<string, unknown>;
+  const time = new Date(e.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const line = (who: string, said: string) => `\r\n\x1b[2m${time}\x1b[0m \x1b[1m${who}\x1b[0m ${truncate(terminalSafe(said), 400)}`;
+  // A message into the thread: blocks of text (what you, an automation, or another thread asked).
+  const asked = Array.isArray(d.input)
+    ? d.input.filter((b) => (b as { type?: string })?.type === 'text').map((b) => (b as { text?: string }).text ?? '').join(' ').trim()
+    : undefined;
+  switch (e.type) {
+    case 'client/thread/start':
+      return asked ? line('🚀 started with', asked) : undefined;
+    case 'client/turn/requested':
+      return asked ? line('👉 asked', asked) : undefined;
+    case 'item/completed': {
+      const item = d.item as { type?: string; text?: string; command?: string; exitCode?: number } | undefined;
+      if (item?.type === 'agentMessage' && item.text) return line('🤖 said', item.text);
+      if (item?.type === 'commandExecution' && item.command) return line('⚙️ ran', `${item.command}${typeof item.exitCode === 'number' ? ` (exit ${item.exitCode})` : ''}`);
+      return undefined;
+    }
+    case 'provider/error':
+      return line('❌ errored', typeof d.message === 'string' ? d.message : e.type);
+    case 'turn/completed':
+      return line('✅ turn', String(d.status ?? 'finished'));
+    default:
+      return undefined; // provisioning, deltas, rate limits, token counts: not for the player
+  }
+}
+
+/** What the office runs to talk to a thread: one message, steering a live turn or starting one. */
+export function tellCommand(threadId: string, text: string): string[] {
+  return ['thread', 'tell', threadId, '--mode', 'auto', '--', text];
+}
+
+/**
+ * One mirrored thread's terminal: the tail of its BB log, fetched when someone is watching it
+ * and refreshed while they do. Implements what a desk's worker needs of its session.
+ */
+export class MirrorSession implements WorkerSession {
+  private timer: NodeJS.Timeout | undefined;
+  private seq = 0;
+  private fetched = false;
+  private busy = false;
+  private alive = true;
+
+  constructor(
+    private readonly threadId: string,
+    private readonly write: (line: string) => void,
+    private readonly viewed: () => boolean,
+  ) {}
+
+  /** The mirror loop's heartbeat: watch while watched, go quiet when nobody is. */
+  tick(): void {
+    if (!this.alive) return; // its worker is gone; an in-flight refresh must not restart the clock
+    if (!this.viewed()) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+      return;
+    }
+    this.timer ??= setInterval(() => void this.refresh(), LOG_MS);
+    if (!this.fetched) void this.refresh();
+  }
+
+  /** Follows the thread: the first fetch walks to the tail (the log only pages oldest first), then each refresh adds what's new. */
+  async refresh(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const events = this.fetched ? await this.page() : await this.walkToTail();
+      if (!this.alive) return;
+      const lines = events.map(eventLine).filter((l): l is string => l !== undefined);
+      // A fresh view shows the recent end of the story, and a burst of new lines shows its tail.
+      for (const line of lines.slice(-TAIL_LINES)) this.write(line);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private async page(): Promise<BbEvent[]> {
+    const events = (await ask('thread', 'log', this.threadId, '--after-seq', String(this.seq), '--limit', String(PAGE_LIMIT))) as BbEvent[] | undefined;
+    if (!events?.length) return [];
+    this.fetched = true;
+    this.seq = events[events.length - 1].seq;
+    return events;
+  }
+
+  private async walkToTail(): Promise<BbEvent[]> {
+    const seen: BbEvent[] = [];
+    for (let hops = 0; hops < WALK_HOPS; hops++) {
+      const events = await this.page();
+      if (!this.alive) return seen;
+      if (!events.length) break;
+      seen.push(...events);
+    }
+    return seen;
+  }
+
+  writeInput(): void {
+    // Keystrokes go nowhere: talking to the thread is a message, typed in the prompt box.
+  }
+
+  /** Sends a message to the thread (`bb thread tell`): the prompt box in its terminal, answered. */
+  prompt(text: string): void {
+    if (!this.alive) return;
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    this.write(`\r\n\x1b[2m${time}\x1b[0m \x1b[1m→ ${truncate(terminalSafe(text), 200)}\x1b[0m\r\n`);
+    (async () => {
+      const told = await ask(...tellCommand(this.threadId, text)) as { ok?: boolean } | undefined;
+      if (!this.alive) return;
+      if (told === undefined) {
+        this.write(`\x1b[31mBB wouldn't take the message — is the thread still alive? Try again in a moment.\x1b[0m\r\n`);
+        return;
+      }
+      // What the thread says back lands here through refresh() as it happens.
+      void this.refresh();
+    })().catch(() => {}); // bb failing is reported above; the echo already happened
+  }
+
+  close(): void {
+    this.alive = false; // an in-flight refresh must not write into the disposed terminal
+    clearInterval(this.timer);
+    this.timer = undefined;
+  }
+}
+
+function groupByProject(threads: BbThread[]): Map<string, BbThread[]> {
+  const by = new Map<string, BbThread[]>();
+  for (const t of threads) {
+    const list = by.get(t.projectId);
+    if (list) list.push(t);
+    else by.set(t.projectId, [t]);
+  }
+  return by;
+}
+
+export async function startBbMirror(ctx: Ctx, openFloor: (def: FloorDef) => Floor | undefined): Promise<() => void> {
+  // A desk's message reaches any thread on this machine (and threads can act on it), so the mirror
+  // runs only while the building itself is reachable from this machine alone.
+  const host = ctx.cfg.host;
+  if (!(host === 'localhost' || host === '::1' || host.startsWith('127.'))) {
+    throw new Error(`--bb needs the office on 127.0.0.1: it can talk to every BB thread here (host is ${host})`);
+  }
+  const waitingSince = new Map<string, number>(); // thread id -> when it started needing you
+  const { cfg } = ctx;
+  let stopping = false;
+  let floorsBusy = false;
+  let threadsBusy = false;
+
+  const syncFloors = async () => {
+    if (floorsBusy) return; // a slow bb must not pile up behind itself
+    floorsBusy = true;
+    try {
+      const [projects, threads] = await Promise.all([runBb<BbProject[]>('project', 'list'), runBb<BbThread[]>('thread', 'list')]);
+      if (stopping || !projects || !threads) return;
+      const by = groupByProject(threads);
+      const now = Date.now();
+      // The busiest projects fill the elevator; quiet ones don't get a floor at all.
+      const wanted = projects
+        .filter((p) => (by.get(p.id) ?? []).some((t) => threadScore(t, now) > 0))
+        .sort((a, b) => (by.get(b.id) ?? []).length - (by.get(a.id) ?? []).length)
+        .slice(0, MAX_FLOORS);
+      for (const f of [...ctx.floors.values()]) {
+        if (f.def.id.startsWith('bb-') && !wanted.some((p) => `bb-${p.id}` === f.def.id)) ctx.closeFloor(f, 'BB');
+      }
+      for (const p of wanted) {
+        if (!ctx.floors.has(`bb-${p.id}`)) {
+          const f = openFloor(bbFloorDef(cfg, p));
+          if (f) console.log(`agent-office: the ${f.def.name} floor mirrors BB project ${p.name}`);
+        }
+      }
+      ctx.floorsChanged();
+    } finally {
+      floorsBusy = false;
+    }
+  };
+
+  const syncThreads = async () => {
+    if (threadsBusy) return; // ibid
+    threadsBusy = true;
+    try {
+      const threads = await runBb<BbThread[]>('thread', 'list');
+      if (stopping || !threads) return;
+      const by = groupByProject(threads);
+      const now = Date.now();
+      for (const f of ctx.floors.values()) {
+        if (!f.def.id.startsWith('bb-')) continue;
+        const projectId = f.def.id.slice(3);
+        const seats = seatThreads(by.get(projectId) ?? [], DESKS.map((d) => d.id), now);
+        const seatedIds = new Set(seats.keys());
+        // Gone quiet: off the desk.
+        for (const w of f.workers.list()) {
+          if (w.createdBy === 'bb' && !seatedIds.has(w.id)) {
+            f.workers.seats.unseat(w.id);
+            waitingSince.delete(w.id);
+          }
+        }
+        const used = new Set(f.workers.list().map((w) => w.name));
+        for (const [threadId, deskId] of seats) {
+          const thread = by.get(projectId)!.find((x) => x.id === threadId)!;
+          const status = threadStatus(thread);
+          const wasWaiting = waitingSince.has(threadId);
+          if (status === 'needs_input') waitingSince.set(threadId, waitingSince.get(threadId) ?? now);
+          else waitingSince.delete(threadId);
+          const waiting = waitingSince.get(threadId);
+          const cur = f.workers.get(threadId);
+          const title = (thread.title ?? thread.titleFallback ?? threadId).trim() || threadId;
+          if (!cur) {
+            let seated: Worker | undefined;
+            const write = (line: string) => {
+              if (!seated?.term) return;
+              seated.term.write(line);
+              seated.screenDirty = true;
+            };
+            const session = new MirrorSession(threadId, write, () => (seated?.info.viewers.length ?? 0) > 0);
+            seated = f.workers.seats.seat(workerInfo(thread, deskId, workerName(thread, used)), session);
+          } else if (
+            cur.deskId !== deskId ||
+            cur.status !== status ||
+            cur.acked !== ackedFor(status, wasWaiting, cur.acked) ||
+            cur.title !== title ||
+            cur.waitingSince !== waiting
+          ) {
+            f.workers.seats.reseat(threadId, {
+              deskId,
+              status,
+              acked: ackedFor(status, wasWaiting, cur.acked),
+              ...(waiting ? { waitingSince: waiting } : {}),
+              title,
+              task: { name: truncate(title, 60), summary: summaryOf(thread) },
+              activity: truncate(title, 80),
+            });
+          }
+        }
+        // Each seated session's heartbeat: the workers are the list, so none outlive their desk.
+        for (const s of f.workers.seats.ticks()) s.tick();
+      }
+      ctx.floorsChanged();
+    } finally {
+      threadsBusy = false;
+    }
+  };
+
+  // The building is there, with everyone at their desks, before anyone walks in.
+  await syncFloors();
+  void syncThreads();
+  const floorsTimer = setInterval(() => void syncFloors(), FLOOR_MS);
+  const threadsTimer = setInterval(() => void syncThreads(), THREAD_MS);
+  return () => {
+    stopping = true;
+    clearInterval(floorsTimer);
+    clearInterval(threadsTimer);
+    // The sessions close with their workers when the floors shut down (see workers/mirror.ts).
+  };
+}

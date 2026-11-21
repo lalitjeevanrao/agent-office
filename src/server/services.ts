@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile, readlink } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
-import type { ServiceInfo } from '../shared/protocol.js';
+import type { ServiceInfo, WorkerInfo } from '../shared/protocol.js';
 
 // Finds the web servers workers start (npm run dev, python -m http.server, ...) so teammates can
 // reach them through the office: every few seconds, list the TCP ports this user's processes
@@ -25,6 +25,21 @@ export interface ServiceOwner {
   cwd: string;
   /** Its floor's checkout, which everyone on that floor shares. */
   root: string;
+}
+
+/** The rows the workers' `owners()` reports, one per worker (see manager.ts). */
+export function ownersOf(
+  workers: Iterable<{ info: WorkerInfo; pty?: { pid?: number } }>,
+  cwd: (info: WorkerInfo) => string,
+  root: string,
+): ServiceOwner[] {
+  return [...workers].map((w) => ({
+    workerId: w.info.id,
+    pid: w.pty?.pid,
+    agent: w.info.kind === 'agent',
+    cwd: cwd(w.info),
+    root,
+  }));
 }
 
 interface Listener {

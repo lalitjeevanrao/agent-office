@@ -149,9 +149,9 @@ export class Floor {
   ) {
     this.id = def.id;
     this.dir = def.dir;
-    const dataDir = path.join(def.dir, '.agent-office');
+    const dataDir = def.dataDir ?? path.join(def.dir, '.agent-office');
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    excludeFromGit(def.dir);
+    if (!def.id.startsWith('bb-')) excludeFromGit(def.dir); // a BB floor may sit on a real checkout: never write there
     this.project = projectInfo(def.dir, def.name, ctx.agentCmd, ctx.agentArgs);
     this.docs = new Docs(def.dir);
     // Before the workers and the dog: the back office's desks are only there once it's built.

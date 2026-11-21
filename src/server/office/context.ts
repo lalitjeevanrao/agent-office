@@ -79,6 +79,8 @@ export interface BuildingServices {
 export interface FloorsOpen {
   /** Opens a floor of the building; undefined (and a note in the log) when it can't. */
   openFloor(def: FloorDef): Floor | undefined;
+  /** Stops the BB mirror loop, when the building has one (see bbmirror.ts). */
+  stopMirror?(): void;
 }
 
 /** Made once the floors are open (office/services.ts). */

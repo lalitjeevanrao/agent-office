@@ -17,3 +17,7 @@ export const workerOf = (ctx: Ctx, id: unknown) => {
   const floor = ctx.workerFloor(wid);
   return floor ? { wid, floor, info: floor.workers.get(wid)! } : undefined;
 };
+
+/** Why not: BB floors mirror the machine's real threads; the office doesn't hire onto them. */
+export const bbNoHire = (floor: Floor): string | undefined =>
+  floor.def.id.startsWith('bb-') ? 'A BB floor mirrors your real threads — hire on a project floor' : undefined;

@@ -39,6 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/AgentSystemLabs/agent-office/main/i
 - **From your phone, too.** `/lite` is the office in 2D: every worker and what it's waiting on, its terminal with the keys a phone keyboard lacks, and the boards. The 3D office offers it on a phone or a slow computer.
 - **GitHub on the walls.** Issues and pull requests hang on cork boards. Hand an issue to a worker, queue tasks, give a worker its own git worktree and open its PR with one key (if one gets deleted behind the office's back, the worker waits at its desk until you rebuild it). One task can span several projects: the worker gets a worktree of each, and a PR in each that links the others.
 - **Agents that manage agents.** Every worker can list, hire, message and send home the others, through an `agent-office` MCP server (Claude Code, Codex, OpenCode) or the `office-workers` command. Ask one to "send everyone whose PR merged home" and it does, deleting their worktrees and branches unless they hold unpushed work. A worker that opens its pull request itself (`gh pr create`) shows it at its desk, and one the office missed can be told which is its own (`office-workers pr`).
+- **Your BB, as a building.** Start with `--bb` and the floors and desks stop mirroring GitHub and mirror this machine's BB instead: one floor per BB project, your threads at the desks — working, waiting on you (beacon and all), or done — and a walk-up terminal showing what each has been doing. The terminal's prompt box talks to the thread for real (`bb thread tell`), so you can answer a beacon without leaving the building (see [docs/bb-mirror.md](docs/bb-mirror.md)).
 - **Together.** Voice, chat, screen sharing on the lounge TV and a shared whiteboard.
 
 - **Other maps.** Turn the whole building into a castle: sit on a throne of iron blades while your workers line up before you when they're done, send new ones off through the Hand of the King, and watch their beards grow long and grey as they toil. Send one home and the Kingsguard runs up from the dungeon, marches it down the stairs and throws it in a cell, where it starves, dies and rots down to a skeleton. Or into a space station in orbit, the Earth turning outside its windows: you run it from the captain's chair on the bridge, and a worker sent home is marched to the airlock and blown out into space, to drift off past the observation windows with everyone who went before it. Or make a map of your own, with its own way of seeing workers off in JSON ([docs/maps.md](docs/maps.md)).
@@ -52,6 +53,7 @@ On the machine that runs the office:
 - **Node.js 20+**
 - At least one agent CLI, signed in as the user that runs the office: **Claude Code** (`claude`), **Codex** (`codex`), **OpenCode** (`opencode`), **Grok** (`grok`), **Muse** (`muse`), **DeepSeek Harness** (`dsh`), **Pi** (`pi`, 0.87.1+) or the **Cursor** CLI (`cursor-agent`). With [accounts](#add-users), everyone can sign in to their own Claude from the office instead.
 - **git**, and the **GitHub CLI** (`gh auth login`) for cloning repos and the issue and PR boards
+- For `--bb` mode, the **BB CLI** (`bb`) on the PATH, signed in (see [docs/bb-mirror.md](docs/bb-mirror.md))
 
 ## Run locally
 
@@ -87,6 +89,7 @@ agent-office --password 'correct horse'     # choose the password
 agent-office --port 4700
 agent-office --agent pi                     # default agent: claude, codex, opencode, grok, muse, dsh, pi or cursor-agent
 agent-office --no-open                      # print the sign-in link instead of opening a browser
+agent-office --bb                          # the building mirrors this machine's BB threads, not GitHub
 agent-office setup                          # the first-start walkthrough again (office stopped)
 ```
 
