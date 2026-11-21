@@ -18,7 +18,6 @@ import { DropStore } from '../drops.js';
 import type { Capacity } from '../machine.js';
 import { PROVIDERS, providerAdapter, titleNoise, type LaunchPlan, type ProviderFloor } from '../providers/index.js';
 import { launchAcp } from './acp.js';
-import type { WorkerSession } from './session.js';
 import { clockWork } from './clock.js';
 import { childEnv } from './env.js';
 import { midTurn } from './lifecycle.js';
@@ -935,7 +934,6 @@ export class WorkerManager {
   private emitUpdate(w: Worker) {
     this.events.update({ ...w.info });
   }
-
 
   /** What a worker's provider adapter is handed of it (see WorkerHandle): made once, kept on the worker. */
   private handleOf(w: Worker): WorkerHandle {

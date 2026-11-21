@@ -2,7 +2,7 @@
 import { isAgentEffort, isAgentProvider, type MeetingClientMsg, type MeetingRequest } from '../../../shared/protocol.js';
 import { OPEN_CODE_MODEL_MAX } from '../../../shared/providers.js';
 import { str } from '../../office/input.js';
-import { here } from './common.js';
+import { bbNoHire, here } from './common.js';
 import type { HandlerMap, ViewPieces } from './types.js';
 
 export const meetingView: ViewPieces['meeting'] = (_ctx, floor) => floor?.meetings.state() ?? { current: null, past: [] };
@@ -12,6 +12,8 @@ export const meetingHandlers = {
     const who = c.peer.name;
     const floor = here(ctx, c);
     if (!floor) return;
+    const noHire = bbNoHire(floor);
+    if (noHire) return ctx.warn(c, noHire);
     if (msg.provider !== undefined && (!isAgentProvider(msg.provider) || !floor.project.agentProviders.includes(msg.provider))) {
       ctx.warn(c, 'Unknown agent provider');
       return;

@@ -13,6 +13,9 @@ agent-office --bb
 The `bb` command has to be on the PATH of the user that runs the office, signed in — that's the
 only requirement. Nothing else changes: same office, same password, same controls.
 
+`--bb` runs only while the office is on `127.0.0.1` (the default): a desk's message can reach any
+thread on the machine, so the building stays reachable from this machine alone.
+
 ## What you see
 
 - **A floor per BB project.** The elevator lists them (up to the twelve busiest), named as BB
@@ -31,9 +34,8 @@ only requirement. Nothing else changes: same office, same password, same control
   doing. What the thread says back shows in the terminal as it happens. Keystrokes still go
   nowhere — talking is a message, not typing.
 - **Nothing runs behind your back.** The office never launches, stops or restarts a BB thread of
-  its own; a message you send is the one exception, and it's yours. Hiring at a desk in `--bb`
-  mode works as it always did — that worker is the office's own, in the floor's checkout, not a
-  BB thread.
+  its own; a message you send is the one exception, and it's yours. Desks on a BB floor can't be
+  hired onto, and meetings don't start there: everyone at them is a real thread, shown as it is.
 
 ## How it works
 

@@ -39,4 +39,9 @@ export class WorkerSeats {
     w.term?.dispose();
     this.ctx.events.remove(id, w.info);
   }
+
+  /** The seated sessions, for the mirror's heartbeat: the workers are the list, so none outlive their desk. */
+  ticks(): { tick(): void }[] {
+    return [...this.ctx.workers.values()].flatMap((w) => (w.mirror && w.dsh && typeof (w.dsh as { tick?: unknown }).tick === 'function' ? [w.dsh as unknown as { tick(): void }] : []));
+  }
 }

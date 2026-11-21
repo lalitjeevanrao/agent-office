@@ -4,7 +4,7 @@ import { MAX_REPOS, type RepoSource } from '../../workers.js';
 import { OPEN_CODE_MODEL_MAX } from '../../../shared/providers.js';
 import { isAgentEffort, isAgentProvider, type WorkerClientMsg } from '../../../shared/protocol.js';
 import { issueNumber, num, str } from '../../office/input.js';
-import { here, workerOf } from './common.js';
+import { bbNoHire, here, workerOf } from './common.js';
 import type { FeatureHooks, HandlerMap, ViewPieces } from './types.js';
 
 const CLEANUPS = new Set(['keep', 'worktree', 'all']);
@@ -20,6 +20,8 @@ export const workerHandlers = {
     const who = c.peer.name;
     const floor = here(ctx, c);
     if (!floor) return;
+    const noHire = bbNoHire(floor);
+    if (noHire) return ctx.warn(c, noHire);
     const kind = msg.kind === 'shell' ? 'shell' : 'agent';
     if (kind === 'agent' && msg.provider !== undefined && (!isAgentProvider(msg.provider) || !floor.project.agentProviders.includes(msg.provider))) {
       ctx.warn(c, 'Unknown agent provider');
@@ -128,6 +130,8 @@ export const workerHandlers = {
     const who = c.peer.name;
     const floor = here(ctx, c);
     if (!floor) return;
+    const noHire = bbNoHire(floor);
+    if (noHire) return ctx.warn(c, noHire);
     const deskId = str(msg.deskId, 32);
     // Nobody there yet: whoever asks first hires it, on their own sign-ins.
     const hires = !floor.workers.deskOccupied(deskId);

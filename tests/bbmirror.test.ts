@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { bbFloorDef, parseRepo, seatThreads, eventLine, tellCommand, threadStatus, workerInfo, type BbThread } from '../src/server/bbmirror.js';
+import { bbFloorDef, parseRepo, seatThreads, eventLine, tellCommand, threadStatus, workerInfo, ackedFor, MirrorSession, __testBb, type BbThread } from '../src/server/bbmirror.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -53,7 +53,7 @@ test('repos parse out of git remotes', () => {
 });
 
 test('talking to a thread is one bb command, steering a live turn or starting one', () => {
-  assert.deepEqual(tellCommand('thr_1', 'ship it'), ['thread', 'tell', 'thr_1', '--mode', 'auto', 'ship it']);
+  assert.deepEqual(tellCommand('thr_1', 'ship it'), ['thread', 'tell', 'thr_1', '--mode', 'auto', '--', 'ship it']);
 });
 
 test('a log says what happened, and plumbing stays out of the terminal', () => {
@@ -84,5 +84,64 @@ test('a BB floor keeps its writable state out of the project it shows', () => {
     assert.equal(def.dir, path.join(home, 'bb', 'p1', 'src'));
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a tell is one argument after --: a message that looks like options stays a message', () => {
+  assert.deepEqual(tellCommand('thr_1', '--file=pwn --json hi'), ['thread', 'tell', 'thr_1', '--mode', 'auto', '--', '--file=pwn --json hi']);
+});
+
+test('only the start of a wait rings the beacon again', () => {
+  assert.equal(ackedFor('working', false), true);
+  assert.equal(ackedFor('needs_input', false), false); // it just started waiting
+  assert.equal(ackedFor('needs_input', true), false); // nobody has acked yet
+  assert.equal(ackedFor('needs_input', true, true), true); // acked, and it stays acked while it waits
+});
+
+test('what a thread says never reaches the terminal as escape codes', () => {
+  const line = eventLine({
+    seq: 1,
+    createdAt: 0,
+    type: 'item/completed',
+    data: { item: { type: 'agentMessage', text: 'x\x1b]8;;http://evil\x1b\\link\x1b]8;;\x1b\\ and \x07 bells' } },
+  });
+  assert.ok(line);
+  assert.ok(!line.includes('\x1b]8'));
+  assert.ok(!line.includes('\x07'));
+});
+
+test('a watched session shows the tail, sends tells intact, and goes quiet once its worker is gone', async () => {
+  const calls: string[][] = [];
+  let pages = 0;
+  __testBb(async (...args) => {
+    calls.push(args);
+    if (args[1] === 'tell') return { ok: true };
+    return pages++ === 0 ? Array.from({ length: 12 }, (_, i) => ({ seq: i + 1, createdAt: 0, type: 'turn/completed', data: { status: 'ok' } })) : [];
+  });
+  const lines: string[] = [];
+  let watching = false;
+  const s = new MirrorSession('thr_1', (l) => lines.push(l), () => watching);
+  try {
+    watching = true;
+    s.tick();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lines.length, 12); // a short thread shows whole
+    assert.ok(calls[0].includes('--limit')); // the tail in one big page, not twenty-five small ones
+
+    s.prompt('hello --file=pwn');
+    await new Promise((r) => setTimeout(r, 20));
+    const tell = calls.find((a) => a[1] === 'tell')!;
+    assert.equal(tell[tell.indexOf('--') + 1], 'hello --file=pwn'); // the message, verbatim
+    assert.ok(tell.indexOf('--json') < tell.indexOf('--')); // options never land inside it
+
+    s.close();
+    pages = 99;
+    s.tick(); // a stale view must not restart a dead session
+    s.prompt('nope');
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(!calls.some((a) => a.includes('nope')));
+  } finally {
+    s.close();
+    __testBb(undefined);
   }
 });

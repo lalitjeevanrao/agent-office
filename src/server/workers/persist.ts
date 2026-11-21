@@ -18,12 +18,7 @@ const RUNNING = new Set<unknown>(['starting', 'idle', 'working', 'done', 'needs_
 /** Saves every worker; `stopping`: the office is closing for good, so nobody is in the middle of anything. */
 export function saveWorkers(file: string, workers: Iterable<Worker>, stopping: boolean) {
   // A mirrored BB thread isn't ours to run: persisted, a restart would wake it into a real agent.
-  const real = [...workers].filter((w) => !w.mirror);
-  return saveRealWorkers(file, real, stopping);
-}
-
-function saveRealWorkers(file: string, workers: Worker[], stopping: boolean) {
-  const saved = [...workers].map(({ info, owner, tracker, state, hookToken, pty, bootBlocked, interrupted }) => ({
+  const saved = [...workers].filter((w) => !w.mirror).map(({ info, owner, tracker, state, hookToken, pty, bootBlocked, interrupted }) => ({
     id: info.id,
     owner,
     kind: info.kind,
